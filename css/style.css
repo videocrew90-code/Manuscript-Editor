@@ -32,6 +32,7 @@ body {
 #app {
   display: grid;
   grid-template-columns: 240px 1fr 340px;
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
 }
 
