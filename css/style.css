@@ -374,6 +374,9 @@ body {
   justify-content: center;
   z-index: 100;
 }
+.modal[hidden] {
+  display: none;
+}
 .modal-card {
   background: var(--panel-light);
   width: 560px;
