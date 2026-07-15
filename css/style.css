@@ -406,6 +406,11 @@ input, textarea {
   border-radius: 6px;
   width: 100%;
 }
+#import-textarea {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: 260px;
+}
 #settings-modal button, #style-modal button { margin-top: 10px; }
 #save-key-btn, #style-add-btn {
   background: var(--ink);
