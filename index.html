@@ -49,6 +49,7 @@
         <input id="chapter-title-input" placeholder="Untitled chapter" />
         <div class="toolbar-actions">
           <button id="undo-btn" class="toolbar-btn" title="Undo last accepted edit">↶ Undo</button>
+          <button id="checkpoint-btn" class="toolbar-btn" title="Save current typing as a checkpoint in the change log">Checkpoint</button>
           <button id="history-btn" class="toolbar-btn" title="Edit history">History</button>
           <button id="check-btn" class="toolbar-btn" title="Run AI / originality check">Run checks</button>
         </div>
@@ -152,6 +153,10 @@
       <div class="modal-head">
         <h2>Edit history — <span id="history-chapter-name"></span></h2>
         <button class="modal-close" data-close="history-modal">×</button>
+      </div>
+      <div class="history-tabs">
+        <button class="history-tab active" data-type="ai">AI edits</button>
+        <button class="history-tab" data-type="manual">Manual edits</button>
       </div>
       <div id="history-list"></div>
     </div>
