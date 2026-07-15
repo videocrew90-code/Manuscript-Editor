@@ -303,6 +303,7 @@ body {
   font-size: 14.5px;
   line-height: 1.6;
   margin: 8px 0;
+  white-space: pre-wrap;
 }
 .chat-actions { display: flex; gap: 8px; margin-top: 10px; }
 .chat-actions button {
@@ -457,6 +458,19 @@ input, textarea {
   white-space: pre-wrap;
 }
 
+.history-tabs { display: flex; gap: 6px; margin-top: 12px; }
+.history-tab {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 5px 5px 0 0;
+  cursor: pointer;
+  border: 1px solid var(--panel-light-line);
+  border-bottom: none;
+  background: var(--panel-light);
+  color: var(--text-muted);
+}
+.history-tab.active { background: #fff; color: var(--text-ink-on-paper); font-weight: 500; }
 #history-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
 .history-item {
   background: #fff;
