@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Redline — Manuscript Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <div id="app">
+
+    <!-- LEFT: Project & Chapter Navigator -->
+    <nav id="nav-panel">
+      <div class="brand">
+        <span class="brand-mark">¶</span>
+        <span class="brand-name">Redline</span>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-head">
+          <span>Projects</span>
+          <button id="new-project-btn" class="icon-btn" title="New project">+</button>
+        </div>
+        <ul id="project-list" class="project-list"></ul>
+      </div>
+
+      <div class="nav-section" id="chapter-nav-section" hidden>
+        <div class="nav-section-head">
+          <span>Chapters</span>
+          <button id="new-chapter-btn" class="icon-btn" title="New chapter">+</button>
+        </div>
+        <ul id="chapter-list" class="chapter-list"></ul>
+        <button id="import-btn" class="nav-footer-btn" style="margin-top:8px;">Import large manuscript</button>
+        <div class="word-total" id="project-word-total"></div>
+      </div>
+
+      <div class="nav-footer">
+        <button id="style-profile-btn" class="nav-footer-btn">Style profile</button>
+        <button id="settings-btn" class="nav-footer-btn">Settings</button>
+      </div>
+    </nav>
+
+    <!-- CENTER: The Page -->
+    <main id="page-panel">
+      <div id="page-toolbar">
+        <input id="chapter-title-input" placeholder="Untitled chapter" />
+        <div class="toolbar-actions">
+          <button id="undo-btn" class="toolbar-btn" title="Undo last accepted edit">↶ Undo</button>
+          <button id="history-btn" class="toolbar-btn" title="Edit history">History</button>
+          <button id="check-btn" class="toolbar-btn" title="Run AI / originality check">Run checks</button>
+        </div>
+      </div>
+
+      <div id="page-scroll">
+        <div id="manuscript" contenteditable="true" spellcheck="false" data-placeholder="Paste or write your manuscript here. Select any passage to ask your editor for a revision."></div>
+      </div>
+
+      <div id="selection-toolbar" hidden>
+        <button id="ask-editor-btn">Ask editor →</button>
+      </div>
+    </main>
+
+    <!-- RIGHT: Chat / Margin panel -->
+    <aside id="side-panel">
+      <div class="side-tabs">
+        <button class="side-tab active" data-tab="chat">Margin notes</button>
+        <button class="side-tab" data-tab="checks">Checks</button>
+      </div>
+
+      <div id="tab-chat" class="side-tab-content active">
+        <div id="chat-empty" class="chat-empty">
+          <p>Select a sentence or passage in the manuscript, then click <strong>Ask editor</strong> to start a note here.</p>
+        </div>
+        <div id="chat-thread" class="chat-thread" hidden></div>
+        <form id="chat-form" hidden>
+          <textarea id="chat-input" placeholder="e.g. tighten this, fix tense, make more formal…" rows="2"></textarea>
+          <button type="submit" id="chat-send">Send</button>
+        </form>
+      </div>
+
+      <div id="tab-checks" class="side-tab-content">
+        <p class="checks-intro">Best-effort heuristics for the current chapter, not a substitute for a licensed plagiarism database.</p>
+        <div id="checks-results"></div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- Style Profile Modal -->
+  <div id="style-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Style profile</h2>
+        <button class="modal-close" data-close="style-modal">×</button>
+      </div>
+      <p class="modal-sub">Feed pairs of <em>before → after</em> text from your past edits. The more you add, the better the editor matches your voice.</p>
+      <div id="style-examples-list"></div>
+      <div class="style-add-form">
+        <textarea id="style-before" placeholder="Before (original text)" rows="3"></textarea>
+        <textarea id="style-after" placeholder="After (your edit)" rows="3"></textarea>
+        <input id="style-note" placeholder="Optional note (e.g. 'trims adverbs, tightens dialogue tags')" />
+        <button id="style-add-btn">Add example</button>
+      </div>
+      <div class="modal-actions">
+        <button id="style-summarize-btn" class="secondary-btn">Regenerate style summary from examples</button>
+      </div>
+      <div id="style-summary-box"></div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Settings</h2>
+        <button class="modal-close" data-close="settings-modal">×</button>
+      </div>
+      <label class="field-label" for="api-key-input">Gemini API key</label>
+      <input id="api-key-input" placeholder="AIza…" autocomplete="off" />
+      <p class="field-hint">Free at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Stored only in this browser.</p>
+      <button id="save-key-btn">Save key</button>
+      <hr />
+      <label class="field-label" for="chapter-split-input">Auto-split new pastes into chapters of about</label>
+      <div class="inline-field">
+        <input id="chapter-split-input" type="number" min="500" step="500" value="3000" />
+        <span>words</span>
+      </div>
+      <p class="field-hint">Keeps very long manuscripts responsive. You can rename/reorder chapters after.</p>
+    </div>
+  </div>
+
+  <!-- Import Modal -->
+  <div id="import-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Import large manuscript</h2>
+        <button class="modal-close" data-close="import-modal">×</button>
+      </div>
+      <p class="modal-sub">Paste as much as you like — 100k, 500k words, whatever you've got. It'll be split into chapters automatically (on blank lines / chapter breaks where possible, otherwise by word count from Settings) so the editor stays fast.</p>
+      <textarea id="import-textarea" rows="8" placeholder="Paste manuscript text here…"></textarea>
+      <div id="import-preview" class="field-hint"></div>
+      <button id="import-run-btn">Split into chapters</button>
+    </div>
+  </div>
+
+  <!-- History Modal -->
+  <div id="history-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Edit history — <span id="history-chapter-name"></span></h2>
+        <button class="modal-close" data-close="history-modal">×</button>
+      </div>
+      <div id="history-list"></div>
+    </div>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
