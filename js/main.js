@@ -1,7 +1,7 @@
 import { db, uid } from "./db.js";
 import { hasKey, saveKey, callGeminiJSON, callGeminiText, GeminiError } from "./gemini.js";
 import { buildEditPrompt, buildStyleSummaryPrompt, buildAiDetectionPrompt, buildDistinctivePhrasesPrompt } from "./prompts.js";
-import { wordDiff, diffToHTML, wordCount } from "./diff.js";
+import { wordDiff, diffToHTML, wordCount, paragraphDiff, lcsDiff } from "./diff.js";
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -21,6 +21,7 @@ const els = {
   chatInput: $("#chat-input"),
   toast: $("#toast"),
   checksResults: $("#checks-results"),
+  checkpointBtn: $("#checkpoint-btn"),
 };
 
 const state = {
@@ -68,6 +69,7 @@ async function createProject() {
 }
 
 async function openProject(projectId) {
+  await maybeCheckpointManualEdit("Autosaved checkpoint");
   await saveCurrentChapterIfDirty();
   state.projectId = projectId;
   state.chapterId = null;
@@ -124,6 +126,7 @@ async function createChapter(initialContent = "", title = "") {
 }
 
 async function openChapter(chapterId) {
+  await maybeCheckpointManualEdit("Autosaved checkpoint");
   await saveCurrentChapterIfDirty();
   state.chapterId = chapterId;
   const chapter = await db.getChapter(chapterId);
@@ -132,10 +135,19 @@ async function openChapter(chapterId) {
   els.manuscript.innerHTML = chapter.content || "";
   closeChatSession();
   loadChapters();
+
+  // Reset the manual-edit checkpoint baseline to this chapter's current content.
+  lastCheckpointHtml = chapter.content || "";
+  lastCheckpointText = htmlToText(lastCheckpointHtml);
+  manualDirty = false;
 }
 
 let dirty = false;
-els.manuscript.addEventListener("input", () => (dirty = true));
+let manualDirty = false;
+els.manuscript.addEventListener("input", () => {
+  dirty = true;
+  manualDirty = true;
+});
 els.chapterTitleInput.addEventListener("input", () => (dirty = true));
 
 async function saveCurrentChapterIfDirty() {
@@ -151,6 +163,201 @@ async function saveCurrentChapterIfDirty() {
 }
 setInterval(saveCurrentChapterIfDirty, 4000);
 window.addEventListener("beforeunload", () => saveCurrentChapterIfDirty());
+
+// ---------------------------------------------------------------------
+// Manual-edit tracking (track changes for typing, separate from AI edits)
+// ---------------------------------------------------------------------
+
+// Converts chapter HTML into plain text with "\n\n" between block-level
+// paragraphs and "\n" for <br>, matching the convention already used when
+// importing text (see splitIntoChapters below). Doesn't touch the DOM/layout
+// — just walks the parsed node tree — so it's cheap and safe to call often.
+function htmlToText(html) {
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  const blockTags = new Set(["P", "DIV", "LI", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE"]);
+  let out = "";
+  function walk(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.textContent;
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.tagName === "BR") {
+      out += "\n";
+      return;
+    }
+    node.childNodes.forEach(walk);
+    if (blockTags.has(node.tagName)) out += "\n\n";
+  }
+  div.childNodes.forEach(walk);
+  return out.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+let lastCheckpointHtml = "";
+let lastCheckpointText = "";
+
+// Splits chapter HTML into its top-level paragraph-ish units (one entry per
+// direct child of the manuscript root — normally <p> tags, but this handles
+// stray text nodes too, e.g. text typed before the first Enter press).
+// Each entry is the *exact* HTML substring as it appears in the stored
+// chapter.content string, so it can be found again later with a plain
+// string search — same trick the existing AI-edit revert already relies on.
+function splitHtmlParagraphs(html) {
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  const parts = [];
+  div.childNodes.forEach((node) => {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      parts.push(node.outerHTML);
+    } else if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+      // Bare text nodes aren't HTML-escaped by the DOM the way outerHTML is,
+      // so escape to match how this text actually appears in the raw
+      // chapter.content string.
+      parts.push(escapeHTML(node.textContent));
+    }
+  });
+  return parts;
+}
+
+// Turns a raw paragraph-level LCS diff into a flat list of per-paragraph
+// edits revert can act on directly:
+//  - { before, after }              -> paragraph edited in place: search
+//                                       for `after`, swap in `before`.
+//  - { before: null, after }        -> paragraph was inserted: search for
+//                                       `after`, remove it.
+//  - { before, after: null, ... }   -> paragraph was deleted: no longer
+//                                       present to search for, so it needs
+//                                       an anchor (a neighboring paragraph
+//                                       we know is unchanged) to know where
+//                                       to put it back.
+function buildParagraphEdits(rawOps) {
+  const edits = [];
+  let i = 0;
+  let lastEqual = null;
+  while (i < rawOps.length) {
+    const op = rawOps[i];
+    if (op.type === "equal") {
+      lastEqual = op.a;
+      i++;
+      continue;
+    }
+    let j = i;
+    const dels = [];
+    const inss = [];
+    while (j < rawOps.length && rawOps[j].type !== "equal") {
+      if (rawOps[j].type === "del") dels.push(rawOps[j].a);
+      else inss.push(rawOps[j].b);
+      j++;
+    }
+    const nextEqual = j < rawOps.length ? rawOps[j].a : null;
+    const pairCount = Math.min(dels.length, inss.length);
+    for (let k = 0; k < pairCount; k++) edits.push({ before: dels[k], after: inss[k] });
+    for (let k = pairCount; k < inss.length; k++) edits.push({ before: null, after: inss[k] });
+    for (let k = pairCount; k < dels.length; k++) {
+      edits.push({ before: dels[k], after: null, anchorAfter: lastEqual, anchorBefore: nextEqual });
+    }
+    i = j;
+  }
+  return edits;
+}
+
+// Applies a paragraph edit list to live chapter HTML by search-and-replace —
+// the exact same mechanism AI-edit revert already uses (search for the
+// known "after" text, swap in "before"), just looped per paragraph instead
+// of once for a single passage. Edited-in-place and inserted paragraphs are
+// found and reverted directly. Deleted paragraphs (nothing left to search
+// for) are re-inserted next to whichever neighboring paragraph we can still
+// find unchanged nearby. Only a paragraph that's been edited *again* since
+// this checkpoint (so neither it nor either neighbor can be found anymore)
+// is left untouched — same "can't locate it" fallback the AI-edit path
+// already has, just scoped to that one paragraph instead of aborting the
+// whole revert.
+function applyParagraphRevert(html, edits) {
+  let result = html;
+  let resolvedCount = 0;
+  const unresolved = [];
+  const deletions = [];
+
+  for (const edit of edits) {
+    if (edit.after != null) {
+      const idx = result.indexOf(edit.after);
+      if (idx === -1) {
+        unresolved.push(edit);
+        continue;
+      }
+      const replacement = edit.before != null ? edit.before : "";
+      result = result.slice(0, idx) + replacement + result.slice(idx + edit.after.length);
+      resolvedCount++;
+    } else {
+      deletions.push(edit); // handled below, after the document has settled
+    }
+  }
+
+  for (const edit of deletions) {
+    let idx = edit.anchorAfter != null ? result.indexOf(edit.anchorAfter) : -1;
+    if (idx > -1) {
+      const insertAt = idx + edit.anchorAfter.length;
+      result = result.slice(0, insertAt) + edit.before + result.slice(insertAt);
+      resolvedCount++;
+      continue;
+    }
+    idx = edit.anchorBefore != null ? result.indexOf(edit.anchorBefore) : -1;
+    if (idx > -1) {
+      result = result.slice(0, idx) + edit.before + result.slice(idx);
+      resolvedCount++;
+      continue;
+    }
+    unresolved.push(edit);
+  }
+
+  return { html: result, resolvedCount, unresolved };
+}
+
+// Records a "manual edit" history entry if the manuscript has changed since
+// the last checkpoint. Called on a timer (see below), from the toolbar
+// "Checkpoint" button, and as a safety flush when switching chapters/projects
+// so a change made just before switching isn't silently dropped from the log.
+async function maybeCheckpointManualEdit(note) {
+  if (!state.chapterId || !manualDirty) return false;
+  await saveCurrentChapterIfDirty();
+  const chapter = await db.getChapter(state.chapterId);
+  if (!chapter) return false;
+
+  const afterHtml = chapter.content || "";
+  const afterText = htmlToText(afterHtml);
+  const beforeText = lastCheckpointText;
+  manualDirty = false;
+
+  if (afterText === beforeText) return false; // nothing actually changed (e.g. only whitespace/formatting)
+
+  const beforeParas = splitHtmlParagraphs(lastCheckpointHtml);
+  const afterParas = splitHtmlParagraphs(afterHtml);
+  const paragraphEdits = buildParagraphEdits(lcsDiff(beforeParas, afterParas));
+
+  await db.addHistory({
+    chapterId: state.chapterId,
+    type: "manual",
+    before: beforeText,
+    after: afterText,
+    beforeHtml: lastCheckpointHtml,
+    afterHtml,
+    paragraphEdits,
+    timestamp: Date.now(),
+    note,
+  });
+
+  lastCheckpointHtml = afterHtml;
+  lastCheckpointText = afterText;
+  return true;
+}
+
+setInterval(() => maybeCheckpointManualEdit("Autosaved checkpoint"), 45000);
+
+els.checkpointBtn?.addEventListener("click", async () => {
+  const saved = await maybeCheckpointManualEdit("Manual checkpoint");
+  toast(saved ? "Checkpoint saved." : "No changes to checkpoint.");
+});
 
 // ---------------------------------------------------------------------
 // Import / auto-split large manuscripts
@@ -416,6 +623,31 @@ async function undoLastEdit() {
 async function revertHistoryEntry(entry) {
   const chapter = await db.getChapter(state.chapterId);
   if (!chapter) return;
+
+  if (entry.type === "manual") {
+    const result = applyParagraphRevert(chapter.content, entry.paragraphEdits || []);
+    chapter.content = result.html;
+    chapter.wordCount = wordCount(chapter.content.replace(/<[^>]+>/g, " "));
+    await db.putChapter(chapter);
+    await db.deleteHistoryEntry(entry.id);
+    if (state.chapterId === chapter.id) {
+      els.manuscript.innerHTML = chapter.content;
+      dirty = false;
+      manualDirty = false;
+      lastCheckpointHtml = chapter.content;
+      lastCheckpointText = htmlToText(chapter.content);
+    }
+    if (result.unresolved.length) {
+      toast(
+        `Reverted ${result.resolvedCount} paragraph(s). ${result.unresolved.length} couldn't be located (likely edited again since) — those weren't touched.`
+      );
+    } else {
+      toast("Reverted.");
+    }
+    loadChapters();
+    return;
+  }
+
   const html = chapter.content;
   const idx = html.indexOf(escapeHTML(entry.after));
   let newHtml;
@@ -439,22 +671,40 @@ async function revertHistoryEntry(entry) {
   loadChapters();
 }
 
+let historyCache = [];
+let historyTab = "ai";
+
 async function openHistoryModal() {
   if (!state.chapterId) return;
   const chapter = await db.getChapter(state.chapterId);
   $("#history-chapter-name").textContent = chapter?.title || "";
-  const history = await db.getHistoryForChapter(state.chapterId);
+  historyCache = await db.getHistoryForChapter(state.chapterId);
+  historyTab = "ai";
+  $$(".history-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.type === historyTab));
+  renderHistoryList();
+  openModal("history-modal");
+}
+
+function renderHistoryList() {
   const list = $("#history-list");
   list.innerHTML = "";
-  if (!history.length) {
-    list.innerHTML = `<p class="field-hint">No edits recorded yet for this chapter.</p>`;
+  // Older entries predate manual-edit tracking and have no `type` field —
+  // treat those as "ai" so they keep showing up where they always did.
+  const entries = historyCache.filter((entry) => (entry.type || "ai") === historyTab);
+
+  if (!entries.length) {
+    const label = historyTab === "ai" ? "AI" : "manual";
+    list.innerHTML = `<p class="field-hint">No ${label} edits recorded yet for this chapter.</p>`;
+    return;
   }
-  history.forEach((entry) => {
+
+  entries.forEach((entry) => {
     const div = document.createElement("div");
     div.className = "history-item";
     const time = new Date(entry.timestamp).toLocaleString();
+    const ops = entry.type === "manual" ? paragraphDiff(entry.before, entry.after) : wordDiff(entry.before, entry.after);
     div.innerHTML = `<button class="h-revert">Revert</button><span class="h-time">${time}</span><div class="diff-block">${diffToHTML(
-      wordDiff(entry.before, entry.after)
+      ops
     )}</div>${entry.note ? `<div class="field-hint">${escapeHTML(entry.note)}</div>` : ""}`;
     div.querySelector(".h-revert").addEventListener("click", () => {
       revertHistoryEntry(entry);
@@ -462,8 +712,15 @@ async function openHistoryModal() {
     });
     list.appendChild(div);
   });
-  openModal("history-modal");
 }
+
+$$(".history-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    historyTab = btn.dataset.type;
+    $$(".history-tab").forEach((b) => b.classList.toggle("active", b === btn));
+    renderHistoryList();
+  });
+});
 
 // ---------------------------------------------------------------------
 // Style profile
