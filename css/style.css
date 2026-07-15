@@ -184,6 +184,7 @@ body {
   flex: 1;
   overflow-y: auto;
   display: flex;
+  align-items: flex-start;
   justify-content: center;
   padding: 40px 24px 120px;
 }
